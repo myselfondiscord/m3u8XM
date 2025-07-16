@@ -43,7 +43,11 @@ class SiriusXM:
             return None
         return res.content
 
-    def get(self, method, params={}, authenticate=True):
+    def get(self, method, params={}, authenticate=True, retries=0):
+        retries += 1
+        if retries >= 3:
+            self.log("Max retries hit on {}".format(method))
+            return None
         if authenticate and not self.is_session_authenticated() and not self.authenticate():
             self.log('Unable to authenticate')
             return None
@@ -51,7 +55,8 @@ class SiriusXM:
         res = self.session.get(self.REST_FORMAT.format(method), params=params)
         if res.status_code != 200:
             if res.status_code == 401:
-                self.authenticate()
+                self.reauthenticate()
+                return self.post(method,params,authenticate,retries)
             self.log('Received status code {} for method \'{}\''.format(res.status_code, method))
             return None
 
@@ -61,7 +66,11 @@ class SiriusXM:
             self.log('Error decoding json for method \'{}\''.format(method))
             return None
 
-    def post(self, method, postdata, authenticate=True, headers={}):
+    def post(self, method, postdata, authenticate=True, headers={},retries=0):
+        retries += 1
+        if retries >= 3:
+            self.log("Max retries hit on {}".format(method))
+            return None
         if authenticate and not self.is_session_authenticated() and not self.authenticate():
             self.log('Unable to authenticate')
             return None
@@ -69,7 +78,8 @@ class SiriusXM:
         res = self.session.post(self.REST_FORMAT.format(method), data=json.dumps(postdata),headers=headers)
         if res.status_code != 200 and res.status_code != 201:
             if res.status_code == 401:
-                self.authenticate()
+                self.reauthenticate()
+                return self.post(method,postdata,authenticate,headers,retries)
             self.log('Received status code {} for method \'{}\''.format(res.status_code, method))
             return None
 
@@ -156,6 +166,9 @@ class SiriusXM:
             self.log('Error parsing json response for authentication')
             return False
 
+    def reauthenticate(self):
+        data = self.post("session/v1/sessions/refresh",{},False)
+        return True
 
     def get_playlist(self):
         # Not 100% sure how this was working previously, but modern times
