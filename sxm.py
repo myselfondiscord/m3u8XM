@@ -50,6 +50,8 @@ class SiriusXM:
 
         res = self.session.get(self.REST_FORMAT.format(method), params=params)
         if res.status_code != 200:
+            if res.status_code == 401:
+                self.authenticate()
             self.log('Received status code {} for method \'{}\''.format(res.status_code, method))
             return None
 
@@ -66,6 +68,8 @@ class SiriusXM:
 
         res = self.session.post(self.REST_FORMAT.format(method), data=json.dumps(postdata),headers=headers)
         if res.status_code != 200 and res.status_code != 201:
+            if res.status_code == 401:
+                self.authenticate()
             self.log('Received status code {} for method \'{}\''.format(res.status_code, method))
             return None
 
@@ -152,6 +156,7 @@ class SiriusXM:
             self.log('Error parsing json response for authentication')
             return False
 
+
     def get_playlist(self):
         # Not 100% sure how this was working previously, but modern times
         # mostly fetch info via json, so we have to make the m3u8 from scratch
@@ -217,9 +222,9 @@ class SiriusXM:
                 title = channel["entity"]["texts"]["title"]["default"]
                 description = channel["entity"]["texts"]["description"]["default"]
                 genre = channel["decorations"]["genre"] if "genre" in channel["decorations"] else ""
-                logo = channel["entity"]["images"]["logo"]["aspect_5x4"]["preferred"]["url"]
-                logo_width = channel["entity"]["images"]["logo"]["aspect_5x4"]["preferred"]["width"]
-                logo_height = channel["entity"]["images"]["logo"]["aspect_5x4"]["preferred"]["height"]
+                logo = channel["entity"]["images"]["tile"]["aspect_1x1"]["preferred"]["url"]
+                logo_width = channel["entity"]["images"]["tile"]["aspect_1x1"]["preferred"]["width"]
+                logo_height = channel["entity"]["images"]["tile"]["aspect_1x1"]["preferred"]["height"]
                 id = channel["entity"]["id"]
                 jsonlogo = json.dumps({
                     "key": logo,
@@ -272,9 +277,9 @@ class SiriusXM:
                     title = channel["entity"]["texts"]["title"]["default"]
                     description = channel["entity"]["texts"]["description"]["default"]
                     genre = channel["decorations"]["genre"] if "genre" in channel["decorations"] else ""
-                    logo = channel["entity"]["images"]["logo"]["aspect_5x4"]["preferred"]["url"]
-                    logo_width = channel["entity"]["images"]["logo"]["aspect_5x4"]["preferred"]["width"]
-                    logo_height = channel["entity"]["images"]["logo"]["aspect_5x4"]["preferred"]["height"]
+                    logo = channel["entity"]["images"]["tile"]["aspect_1x1"]["preferred"]["url"]
+                    logo_width = channel["entity"]["images"]["tile"]["aspect_1x1"]["preferred"]["width"]
+                    logo_height = channel["entity"]["images"]["tile"]["aspect_1x1"]["preferred"]["height"]
                     id = channel["entity"]["id"]
                     jsonlogo = json.dumps({
                         "key": logo,
@@ -282,7 +287,7 @@ class SiriusXM:
                             {"format":{"type":"jpeg"}},
                             {"resize":{"width":logo_width,"height":logo_height}}
                         ]
-                    })
+                    },separators=(',', ':'))
                     b64logo = base64.b64encode(jsonlogo.encode("ascii")).decode("utf-8")
                     self.channels.append({
                         "title": title,
@@ -355,7 +360,7 @@ class SiriusXM:
         baseurl = streaminfo["base_url"]
         HLStag = streaminfo["HLS"]
         segmenturl = "{}/{}/{}".format(baseurl,HLStag,seg)
-        print("fetching seg from url:",segmenturl)
+        # print("fetching seg from url:",segmenturl)
         data = self.sfetch(segmenturl)
         return data
         
