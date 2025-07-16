@@ -216,6 +216,7 @@ class SiriusXM:
             for channel in data["page"]["containers"][0]["sets"][0]["items"]:
                 title = channel["entity"]["texts"]["title"]["default"]
                 description = channel["entity"]["texts"]["description"]["default"]
+                genre = channel["decorations"]["genre"] if "genre" in channel["decorations"] else ""
                 logo = channel["entity"]["images"]["logo"]["aspect_5x4"]["preferred"]["url"]
                 logo_width = channel["entity"]["images"]["logo"]["aspect_5x4"]["preferred"]["width"]
                 logo_height = channel["entity"]["images"]["logo"]["aspect_5x4"]["preferred"]["height"]
@@ -231,6 +232,7 @@ class SiriusXM:
                 self.channels.append({
                     "title": title,
                     "description": description,
+                    "genre": genre,
                     "logo":  self.CDN_URL.format(b64logo),
                     "url": "/listen/{}".format(id),
                     "id": id
@@ -269,7 +271,7 @@ class SiriusXM:
                 for channel in data["container"]["sets"][0]["items"]:
                     title = channel["entity"]["texts"]["title"]["default"]
                     description = channel["entity"]["texts"]["description"]["default"]
-                    genre = channel["decorations"]["genre"]
+                    genre = channel["decorations"]["genre"] if "genre" in channel["decorations"] else ""
                     logo = channel["entity"]["images"]["logo"]["aspect_5x4"]["preferred"]["url"]
                     logo_width = channel["entity"]["images"]["logo"]["aspect_5x4"]["preferred"]["width"]
                     logo_height = channel["entity"]["images"]["logo"]["aspect_5x4"]["preferred"]["height"]
