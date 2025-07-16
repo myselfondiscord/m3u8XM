@@ -39,7 +39,7 @@ class SiriusXM:
     def sfetch(self, url):
         res = self.session.get(url)
         if res.status_code != 200:
-            self.log("Failed to recieve stream data.")
+            self.log("Failed to recieve stream data. Error code {}".format(str(res.status_code)))
             return None
         return res.content
 
@@ -235,6 +235,7 @@ class SiriusXM:
                 title = channel["entity"]["texts"]["title"]["default"]
                 description = channel["entity"]["texts"]["description"]["default"]
                 genre = channel["decorations"]["genre"] if "genre" in channel["decorations"] else ""
+                channel_type = channel["actions"]["play"][0]["entity"]["type"]
                 logo = channel["entity"]["images"]["tile"]["aspect_1x1"]["preferred"]["url"]
                 logo_width = channel["entity"]["images"]["tile"]["aspect_1x1"]["preferred"]["width"]
                 logo_height = channel["entity"]["images"]["tile"]["aspect_1x1"]["preferred"]["height"]
@@ -251,10 +252,12 @@ class SiriusXM:
                     "title": title,
                     "description": description,
                     "genre": genre,
+                    "channel_type": channel_type,
                     "logo":  self.CDN_URL.format(b64logo),
                     "url": "/listen/{}".format(id),
                     "id": id
                 })
+                
             channellen = data["page"]["containers"][0]["sets"][0]["pagination"]["offset"]["size"]
             for offset in range(50,channellen,50):
                 postdata = {
@@ -290,6 +293,7 @@ class SiriusXM:
                     title = channel["entity"]["texts"]["title"]["default"]
                     description = channel["entity"]["texts"]["description"]["default"]
                     genre = channel["decorations"]["genre"] if "genre" in channel["decorations"] else ""
+                    channel_type = channel["actions"]["play"][0]["entity"]["type"]
                     logo = channel["entity"]["images"]["tile"]["aspect_1x1"]["preferred"]["url"]
                     logo_width = channel["entity"]["images"]["tile"]["aspect_1x1"]["preferred"]["width"]
                     logo_height = channel["entity"]["images"]["tile"]["aspect_1x1"]["preferred"]["height"]
@@ -306,18 +310,31 @@ class SiriusXM:
                         "title": title,
                         "description": description,
                         "genre": genre,
+                        "channel_type": channel_type,
                         "logo":  self.CDN_URL.format(b64logo),
                         "url": "/listen/{}".format(id),
                         "id": id
                     })
+
         return self.channels
 
+    #temporary patch, should do a reverse index lookup table
+    def get_channel_info(self,id):
+        if not self.channels:
+            self.get_channels()
+        for ch in self.channels:
+            if id == ch["id"]:
+                return ch
+        return None
+
     def get_tuner(self,id):
+        channel_info = self.get_channel_info(id)
+        channel_type = channel_info["channel_type"] if channel_info and "channel_type" in channel_info else "channel-linear"
         postdata = {
             "id":id,
-            "type":"channel-linear",
+            "type":channel_type,
             "hlsVersion":"V3",
-            "manifestVariant":"WEB",
+            "manifestVariant":"WEB" if channel_type == "channel-linear" else "FULL",
             "mtcVersion":"V2"
         }
         data = self.post('playback/play/v1/tuneSource',postdata,authenticate=True)
@@ -342,6 +359,7 @@ class SiriusXM:
                 streaminfo["HLS"] = line.split("/")[0]
         self.channel_urls[id] = streaminfo
         return streaminfo
+    
 
     def get_channel(self, id):
         # Hit a wall in how I wanted to implement this, but this is what I ended up doing:
@@ -358,7 +376,7 @@ class SiriusXM:
         if not data:
             print("failed to fetch AAC stream list")
             return False
-        data = data.replace("https://api.edge-gateway.siriusxm.com/playback/key/v1/00000000-0000-0000-0000-000000000000","/key/1",1)
+        data = data.replace("https://api.edge-gateway.siriusxm.com/playback/key/v1/","/key/",1)
         lineoutput = []
         lines = data.splitlines()
         for x in range(len(lines)):
@@ -377,16 +395,17 @@ class SiriusXM:
         data = self.sfetch(segmenturl)
         return data
         
-    def getAESkey(self):
-        data = self.get("playback/key/v1/00000000-0000-0000-0000-000000000000")
+    def getAESkey(self,uuid):
+        data = self.get("playback/key/v1/{}".format(uuid))
         if not data:
             self.log("AES Key fetch error.")
+            return False
         return data["key"]
 
 
 def make_sirius_handler(sxm):
     class SiriusHandler(BaseHTTPRequestHandler):
-        HLS_AES_KEY = base64.b64decode(sxm.getAESkey())
+        #HLS_AES_KEY = base64.b64decode(sxm.getAESkey())
 
         def do_GET(self):
             if self.path.endswith('.m3u8'):
@@ -413,11 +432,18 @@ def make_sirius_handler(sxm):
                 else:
                     self.send_response(500)
                     self.end_headers()
-            elif self.path.endswith('/key/1'):
-                self.send_response(200)
-                self.send_header('Content-Type', 'text/plain')
-                self.end_headers()
-                self.wfile.write(self.HLS_AES_KEY)
+            elif self.path.startswith('/key'):
+                split = self.path.split("/")
+                uuid = split[-1]
+                key = base64.b64decode(sxm.getAESkey(uuid))
+                if not key:
+                    self.send_response(500)
+                    self.end_headers()
+                else:
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'text/plain')
+                    self.end_headers()
+                    self.wfile.write(key)
             # TODO: Add a path which works in the format of /listen/{UUID}
             # Make the M3U8 show it but only fetch the stream when clicked.
             elif self.path.startswith("/listen/"):
@@ -439,7 +465,7 @@ if __name__ == '__main__':
 
     ip = config.get("settings","ip")
     port = int(config.get("settings","port"))
-    print(ip, port)
+    print("Starting server at {}:{}".format(ip, port))
     sxm = SiriusXM(email, password)
     httpd = HTTPServer((ip, port), make_sirius_handler(sxm))
     try:
