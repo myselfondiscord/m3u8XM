@@ -55,3 +55,6 @@ docs/_build/
 
 # PyBuilder
 target/
+=======
+config.ini
+>>>>>>> 811e83b (Initial commit)

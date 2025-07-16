@@ -6,11 +6,13 @@ import json
 import time, datetime
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
+import configparser
+config = configparser.ConfigParser()
 
 class SiriusXM:
-    USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_6) AppleWebKit/604.5.6 (KHTML, like Gecko) Version/11.0.3 Safari/604.5.6'
-    REST_FORMAT = 'https://player.siriusxm.com/rest/v2/experience/modules/{}'
-    LIVE_PRIMARY_HLS = 'https://siriusxm-priprodlive.akamaized.net'
+    USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36'
+    REST_FORMAT = 'https://api.edge-gateway.siriusxm.com/{}'
+    CDN_URL = "https://imgsrv-sxm-prod-device.streaming.siriusxm.com/{}"
 
     def __init__(self, username, password):
         self.session = requests.Session()
@@ -19,18 +21,29 @@ class SiriusXM:
         self.password = password
         self.playlists = {}
         self.channels = None
+        self.m3u8dat = None
+        self.channel_urls = {}
 
     @staticmethod
     def log(x):
         print('{} <SiriusXM>: {}'.format(datetime.datetime.now().strftime('%d.%b %Y %H:%M:%S'), x))
 
+
+    #TODO: Figure out if authentication is a valid method anymore. It might need a new login each time.
     def is_logged_in(self):
-        return 'SXMAUTH' in self.session.cookies
+        return 'Authorization' in self.session.headers
 
     def is_session_authenticated(self):
-        return 'AWSELB' in self.session.cookies and 'JSESSIONID' in self.session.cookies
+        return 'Authorization' in self.session.headers
+    
+    def sfetch(self, url):
+        res = self.session.get(url)
+        if res.status_code != 200:
+            self.log("Failed to recieve stream data.")
+            return None
+        return res.content
 
-    def get(self, method, params, authenticate=True):
+    def get(self, method, params={}, authenticate=True):
         if authenticate and not self.is_session_authenticated() and not self.authenticate():
             self.log('Unable to authenticate')
             return None
@@ -46,57 +59,76 @@ class SiriusXM:
             self.log('Error decoding json for method \'{}\''.format(method))
             return None
 
-    def post(self, method, postdata, authenticate=True):
+    def post(self, method, postdata, authenticate=True, headers={}):
         if authenticate and not self.is_session_authenticated() and not self.authenticate():
             self.log('Unable to authenticate')
             return None
 
-        res = self.session.post(self.REST_FORMAT.format(method), data=json.dumps(postdata))
-        if res.status_code != 200:
+        res = self.session.post(self.REST_FORMAT.format(method), data=json.dumps(postdata),headers=headers)
+        if res.status_code != 200 and res.status_code != 201:
             self.log('Received status code {} for method \'{}\''.format(res.status_code, method))
             return None
 
+        resjson = res.json()
+        bearer_token = resjson["grant"] if "grant" in resjson else resjson["accessToken"] if "accessToken" in resjson else None
+        if bearer_token != None:
+            self.session.headers.update({"Authorization": f"Bearer {bearer_token}"})
+
         try:
-            return res.json()
+            return resjson
         except ValueError:
             self.log('Error decoding json for method \'{}\''.format(method))
             return None
 
     def login(self):
-        postdata = {
-            'moduleList': {
-                'modules': [{
-                    'moduleRequest': {
-                        'resultTemplate': 'web',
-                        'deviceInfo': {
-                            'osVersion': 'Mac',
-                            'platform': 'Web',
-                            'sxmAppVersion': '3.1802.10011.0',
-                            'browser': 'Safari',
-                            'browserVersion': '11.0.3',
-                            'appRegion': 'US',
-                            'deviceModel': 'K2WebClient',
-                            'clientDeviceId': 'null',
-                            'player': 'html5',
-                            'clientDeviceType': 'web',
-                        },
-                        'standardAuth': {
-                            'username': self.username,
-                            'password': self.password,
-                        },
-                    },
-                }],
-            },
-        }
-        data = self.post('modify/authentication', postdata, authenticate=False)
-        if not data:
-            return False
+        # Four layer process
+        # Assuming the login can work separate from Auth, this is split into two connections:
+        # 1) device acknowledge
+        # 2) grant anonymous permission
+        # The following is reserved for Authentication:
+        # Login
+        # Affirm Authentication
 
+        postdata = {
+            'devicePlatform': "web-desktop",
+            'deviceAttributes': {
+                'browser': {
+                    'browserVersion': "7.74.0",
+                    'userAgent': self.USER_AGENT,
+                    'sdk': 'web',
+                    'app': 'web',
+                    'sdkVersion': "7.74.0",
+                    'appVersion': "7.74.0"
+                }
+            },
+            'grantVersion': 'v2'
+        }
+        sxmheaders = {
+            "x-sxm-tenant":"sxm" # required, but not used everywhere
+        }
+        data = self.post('device/v1/devices', postdata, authenticate=False,headers=sxmheaders)
+        if not data:
+            self.log("Error creating device session:",data)
+            return False
+        
+        #try:
+        #    return data['grant'] == True and self.is_logged_in()
+        #except KeyError:
+        #    self.log('Error decoding json response for login')
+        #    return False
+        
+        # Once device is registered, grant anonymous permissions 
+        data = self.post('session/v1/sessions/anonymous', {}, authenticate=False,headers=sxmheaders)
+        if not data:
+            self.log("Error validating anonymous session:",data)
+            return False
         try:
-            return data['ModuleListResponse']['status'] == 1 and self.is_logged_in()
+            return "accessToken" in data and self.is_logged_in()
         except KeyError:
             self.log('Error decoding json response for login')
             return False
+        
+
 
     def authenticate(self):
         if not self.is_logged_in() and not self.login():
@@ -104,233 +136,255 @@ class SiriusXM:
             return False
 
         postdata = {
-            'moduleList': {
-                'modules': [{
-                    'moduleRequest': {
-                        'resultTemplate': 'web',
-                        'deviceInfo': {
-                            'osVersion': 'Mac',
-                            'platform': 'Web',
-                            'clientDeviceType': 'web',
-                            'sxmAppVersion': '3.1802.10011.0',
-                            'browser': 'Safari',
-                            'browserVersion': '11.0.3',
-                            'appRegion': 'US',
-                            'deviceModel': 'K2WebClient',
-                            'player': 'html5',
-                            'clientDeviceId': 'null'
-                        }
-                    }
-                }]
-            }
+            "handle": self.username,
+            "password": self.password
         }
-        data = self.post('resume?OAtrial=false', postdata, authenticate=False)
+        data = self.post('identity/v1/identities/authenticate/password', postdata, authenticate=False)
         if not data:
             return False
 
+        
+        autheddata = self.post('session/v1/sessions/authenticated', {}, authenticate=False)
+
         try:
-            return data['ModuleListResponse']['status'] == 1 and self.is_session_authenticated()
+            return autheddata['sessionType'] == "authenticated" and self.is_session_authenticated()
         except KeyError:
             self.log('Error parsing json response for authentication')
             return False
 
-    def get_sxmak_token(self):
-        try:
-            return self.session.cookies['SXMAKTOKEN'].split('=', 1)[1].split(',', 1)[0]
-        except (KeyError, IndexError):
-            return None
-
-    def get_gup_id(self):
-        try:
-            return json.loads(urllib.parse.unquote(self.session.cookies['SXMDATA']))['gupId']
-        except (KeyError, ValueError):
-            return None
-
-    def get_playlist_url(self, guid, channel_id, use_cache=True, max_attempts=5):
-        if use_cache and channel_id in self.playlists:
-             return self.playlists[channel_id]
-
-        params = {
-            'assetGUID': guid,
-            'ccRequestType': 'AUDIO_VIDEO',
-            'channelId': channel_id,
-            'hls_output_mode': 'custom',
-            'marker_mode': 'all_separate_cue_points',
-            'result-template': 'web',
-            'time': int(round(time.time() * 1000.0)),
-            'timestamp': datetime.datetime.utcnow().isoformat('T') + 'Z'
-        }
-        data = self.get('tune/now-playing-live', params)
-        if not data:
-            return None
-
-        # get status
-        try:
-            status = data['ModuleListResponse']['status']
-            message = data['ModuleListResponse']['messages'][0]['message']
-            message_code = data['ModuleListResponse']['messages'][0]['code']
-        except (KeyError, IndexError):
-            self.log('Error parsing json response for playlist')
-            return None
-
-        # login if session expired
-        if message_code == 201 or message_code == 208:
-            if max_attempts > 0:
-                self.log('Session expired, logging in and authenticating')
-                if self.authenticate():
-                    self.log('Successfully authenticated')
-                    return self.get_playlist_url(guid, channel_id, use_cache, max_attempts - 1)
-                else:
-                    self.log('Failed to authenticate')
-                    return None
-            else:
-                self.log('Reached max attempts for playlist')
-                return None
-        elif message_code != 100:
-            self.log('Received error {} {}'.format(message_code, message))
-            return None
-
-        # get m3u8 url
-        try:
-            playlists = data['ModuleListResponse']['moduleList']['modules'][0]['moduleResponse']['liveChannelData']['hlsAudioInfos']
-        except (KeyError, IndexError):
-            self.log('Error parsing json response for playlist')
-            return None
-        for playlist_info in playlists:
-            if playlist_info['size'] == 'LARGE':
-                playlist_url = playlist_info['url'].replace('%Live_Primary_HLS%', self.LIVE_PRIMARY_HLS)
-                self.playlists[channel_id] = self.get_playlist_variant_url(playlist_url)
-                return self.playlists[channel_id]
-
-        return None
-
-    def get_playlist_variant_url(self, url):
-        params = {
-            'token': self.get_sxmak_token(),
-            'consumer': 'k2',
-            'gupId': self.get_gup_id(),
-        }
-        res = self.session.get(url, params=params)
-
-        if res.status_code != 200:
-            self.log('Received status code {} on playlist variant retrieval'.format(res.status_code))
-            return None
+    def get_playlist(self):
+        # Not 100% sure how this was working previously, but modern times
+        # mostly fetch info via json, so we have to make the m3u8 from scratch
+        # Create our own M3U8 from scratch, include all we found
+        if not self.channels:
+            self.get_channels()
+        if not self.m3u8dat:
+            data = []
+            data.append("#EXTM3U")
+            m3umetadata = """#EXTINF:-1 tvg-logo="{}" group-title="{}",{}\n{}"""
+            for channel in self.channels:
+                #TODO: Work on finding the proper M3U8 metadata needed.
+                title = channel["title"]
+                genre = channel["genre"]
+                logo = channel["logo"]
+                url = "/listen/{}".format(channel["id"])
+                formattedm3udata = m3umetadata.format(logo,genre,title,url)
+                data.append(formattedm3udata)
+            self.m3u8dat = "\n".join(data)
         
-        for x in res.text.split('\n'):
-            if x.rstrip().endswith('.m3u8'):
-                # first variant should be 256k one
-                return '{}/{}'.format(url.rsplit('/', 1)[0], x.rstrip())
-        
-        return None
+        return self.m3u8dat
 
-    def get_playlist(self, name, use_cache=True):
-        guid, channel_id = self.get_channel(name)
-        if not guid or not channel_id:
-            self.log('No channel for {}'.format(name))
-            return None
-
-        url = self.get_playlist_url(guid, channel_id, use_cache)
-        params = {
-            'token': self.get_sxmak_token(),
-            'consumer': 'k2',
-            'gupId': self.get_gup_id(),
-        }
-        res = self.session.get(url, params=params)
-
-        if res.status_code == 403:
-            self.log('Received status code 403 on playlist, renewing session')
-            return self.get_playlist(name, False)
-
-        if res.status_code != 200:
-            self.log('Received status code {} on playlist variant'.format(res.status_code))
-            return None
-
-        # add base path to segments
-        base_url = url.rsplit('/', 1)[0]
-        base_path = base_url[8:].split('/', 1)[1]
-        lines = res.text.split('\n')
-        for x in range(len(lines)):
-            if lines[x].rstrip().endswith('.aac'):
-                lines[x] = '{}/{}'.format(base_path, lines[x])
-        return '\n'.join(lines)
-
-    def get_segment(self, path, max_attempts=5):
-        url = '{}/{}'.format(self.LIVE_PRIMARY_HLS, path)
-        params = {
-            'token': self.get_sxmak_token(),
-            'consumer': 'k2',
-            'gupId': self.get_gup_id(),
-        }
-        res = self.session.get(url, params=params)
-
-        if res.status_code == 403:
-            if max_attempts > 0:
-                self.log('Received status code 403 on segment, renewing session')
-                self.get_playlist(path.split('/', 2)[1], False)
-                return self.get_segment(path, max_attempts - 1)
-            else:
-                self.log('Received status code 403 on segment, max attempts exceeded')
-                return None
-
-        if res.status_code != 200:
-            self.log('Received status code {} on segment'.format(res.status_code))
-            return None
-
-        return res.content
-    
     def get_channels(self):
         # download channel list if necessary
+        # todo: find out if the container ID or the UUID changes; how to auto fetch if so.
+        # channel list is split up. gotta get every channel
+
         if not self.channels:
-            postdata = {
-                'moduleList': {
-                    'modules': [{
-                        'moduleArea': 'Discovery',
-                        'moduleType': 'ChannelListing',
-                        'moduleRequest': {
-                            'consumeRequests': [],
-                            'resultTemplate': 'responsive',
-                            'alerts': [],
-                            'profileInfos': []
+            self.channels = []
+            # todo: this is how the web traffic processed the channels, might not be needed though
+            initData = {
+                "containerConfiguration": {
+                    "3JoBfOCIwo6FmTpzM1S2H7": {
+                        "filter": {
+                            "one": {
+                                "filterId": "all"
+                            }
+                        },
+                        "sets": {
+                            "5mqCLZ21qAwnufKT8puUiM": {
+                                "sort": {
+                                    "sortId": "CHANNEL_NUMBER_ASC"
+                                }
+                            }
                         }
-                    }]
+                    }
+                },
+                "pagination": {
+                    "offset": {
+                        "containerLimit": 3,
+                        "setItemsLimit": 50
+                    }
+                },
+                "deviceCapabilities": {
+                    "supportsDownloads": False
                 }
             }
-            data = self.post('get', postdata)
+            data = self.post('browse/v1/pages/curated-grouping/403ab6a5-d3c9-4c2a-a722-a94a6a5fd056/view', initData)
             if not data:
-                self.log('Unable to get channel list')
+                self.log('Unable to get init channel list')
                 return (None, None)
-
-            try:
-                self.channels = data['ModuleListResponse']['moduleList']['modules'][0]['moduleResponse']['contentData']['channelListing']['channels']
-            except (KeyError, IndexError):
-                self.log('Error parsing json response for channels')
-                return []
+            for channel in data["page"]["containers"][0]["sets"][0]["items"]:
+                title = channel["entity"]["texts"]["title"]["default"]
+                description = channel["entity"]["texts"]["description"]["default"]
+                logo = channel["entity"]["images"]["logo"]["aspect_5x4"]["preferred"]["url"]
+                logo_width = channel["entity"]["images"]["logo"]["aspect_5x4"]["preferred"]["width"]
+                logo_height = channel["entity"]["images"]["logo"]["aspect_5x4"]["preferred"]["height"]
+                id = channel["entity"]["id"]
+                jsonlogo = json.dumps({
+                    "key": logo,
+                    "edits":[
+                        {"format":{"type":"jpeg"}},
+                        {"resize":{"width":logo_width,"height":logo_height}}
+                    ]
+                },separators=(',', ':'))
+                b64logo = base64.b64encode(jsonlogo.encode("ascii")).decode("utf-8")
+                self.channels.append({
+                    "title": title,
+                    "description": description,
+                    "logo":  self.CDN_URL.format(b64logo),
+                    "url": "/listen/{}".format(id),
+                    "id": id
+                })
+            channellen = data["page"]["containers"][0]["sets"][0]["pagination"]["offset"]["size"]
+            for offset in range(50,channellen,50):
+                postdata = {
+                    "filter": {
+                        "one": {
+                        "filterId": "all"
+                        }
+                    },
+                    "sets": {
+                        "5mqCLZ21qAwnufKT8puUiM": {
+                        "sort": {
+                            "sortId": "CHANNEL_NUMBER_ASC"
+                        },
+                        "pagination": {
+                            "offset": {
+                            "setItemsOffset": offset,
+                            "setItemsLimit": 50
+                            }
+                        }
+                        }
+                    },
+                    "pagination": {
+                        "offset": {
+                        "setItemsLimit": 50
+                        }
+                    }
+                }
+                data = self.post('browse/v1/pages/curated-grouping/403ab6a5-d3c9-4c2a-a722-a94a6a5fd056/containers/3JoBfOCIwo6FmTpzM1S2H7/view', postdata, initData)
+                if not data:
+                    self.log('Unable to get fetch channel list chunk')
+                    return (None, None)
+                for channel in data["container"]["sets"][0]["items"]:
+                    title = channel["entity"]["texts"]["title"]["default"]
+                    description = channel["entity"]["texts"]["description"]["default"]
+                    genre = channel["decorations"]["genre"]
+                    logo = channel["entity"]["images"]["logo"]["aspect_5x4"]["preferred"]["url"]
+                    logo_width = channel["entity"]["images"]["logo"]["aspect_5x4"]["preferred"]["width"]
+                    logo_height = channel["entity"]["images"]["logo"]["aspect_5x4"]["preferred"]["height"]
+                    id = channel["entity"]["id"]
+                    jsonlogo = json.dumps({
+                        "key": logo,
+                        "edits":[
+                            {"format":{"type":"jpeg"}},
+                            {"resize":{"width":logo_width,"height":logo_height}}
+                        ]
+                    })
+                    b64logo = base64.b64encode(jsonlogo.encode("ascii")).decode("utf-8")
+                    self.channels.append({
+                        "title": title,
+                        "description": description,
+                        "genre": genre,
+                        "logo":  self.CDN_URL.format(b64logo),
+                        "url": "/listen/{}".format(id),
+                        "id": id
+                    })
         return self.channels
 
-    def get_channel(self, name):
-        name = name.lower()
-        for x in self.get_channels():
-            if x.get('name', '').lower() == name or x.get('channelId', '').lower() == name or x.get('siriusChannelNumber') == name:
-                return (x['channelGuid'], x['channelId'])
-        return (None, None)
+    def get_tuner(self,id):
+        postdata = {
+            "id":id,
+            "type":"channel-linear",
+            "hlsVersion":"V3",
+            "manifestVariant":"WEB",
+            "mtcVersion":"V2"
+        }
+        data = self.post('playback/play/v1/tuneSource',postdata,authenticate=True)
+        if not data:
+            self.log("Couldn't tune channel.")
+            return False
+        #TODO: add secondary cause why not
+        streaminfo = {}
+        primarystreamurl = data["streams"][0]["urls"][0]["url"]
+        base_url, m3u8_loc = primarystreamurl.rsplit('/', 1)
+        streaminfo["base_url"] = base_url
+        streaminfo["sources"] = m3u8_loc
+        streaminfo["chid"] = base_url.split('/')[-2]
+        streamdata = self.sfetch(primarystreamurl).decode("utf-8")
+        if not streamdata:
+            print("Failed to fetch m3u8 stream details")
+            return False
+        # TODO: make this have options for other qualities (url parameter?)
+        for line in streamdata.splitlines():
+            if line.find("256k") > 0 and line.endswith("m3u8"):
+                streaminfo["quality"] = line
+                streaminfo["HLS"] = line.split("/")[0]
+        self.channel_urls[id] = streaminfo
+        return streaminfo
+
+    def get_channel(self, id):
+        # Hit a wall in how I wanted to implement this, but this is what I ended up doing:
+        # Caching the /tuneSource url provided, and associating it to the /listen UUID
+        # this prevents multiple hits to /tuneSource and more to the Streaming CDN
+        # potentially speeding this part of the process up, as well as being more subtle
+        # in main site web traffic.
+        if not id in self.channel_urls:
+            self.get_tuner(id)
+        streaminfo = self.channel_urls[id]
+        aacurl = "{}/{}".format(streaminfo["base_url"],streaminfo["quality"])
+        # fetch the list of aac files
+        data = self.sfetch(aacurl).decode("utf-8")
+        if not data:
+            print("failed to fetch AAC stream list")
+            return False
+        data = data.replace("https://api.edge-gateway.siriusxm.com/playback/key/v1/00000000-0000-0000-0000-000000000000","/key/1",1)
+        lineoutput = []
+        lines = data.splitlines()
+        for x in range(len(lines)):
+            if lines[x].rstrip().endswith('.aac'):
+                lines[x] = '{}/{}'.format(id, lines[x])
+        return '\n'.join(lines).encode('utf-8')
+
+    def get_segment(self,id,seg):
+        if not id in self.channel_urls:
+            self.get_tuner(id)
+        streaminfo = self.channel_urls[id]
+        baseurl = streaminfo["base_url"]
+        HLStag = streaminfo["HLS"]
+        segmenturl = "{}/{}/{}".format(baseurl,HLStag,seg)
+        print("fetching seg from url:",segmenturl)
+        data = self.sfetch(segmenturl)
+        return data
+        
+    def getAESkey(self):
+        data = self.get("playback/key/v1/00000000-0000-0000-0000-000000000000")
+        if not data:
+            self.log("AES Key fetch error.")
+        return data["key"]
+
 
 def make_sirius_handler(sxm):
     class SiriusHandler(BaseHTTPRequestHandler):
-        HLS_AES_KEY = base64.b64decode('0Nsco7MAgxowGvkUT8aYag==')
+        HLS_AES_KEY = base64.b64decode(sxm.getAESkey())
 
         def do_GET(self):
             if self.path.endswith('.m3u8'):
-                data = sxm.get_playlist(self.path.rsplit('/', 1)[1][:-5])
+                data = sxm.get_playlist()
                 if data:
                     self.send_response(200)
                     self.send_header('Content-Type', 'application/x-mpegURL')
                     self.end_headers()
                     self.wfile.write(bytes(data, 'utf-8'))
+                    return
                 else:
                     self.send_response(500)
                     self.end_headers()
             elif self.path.endswith('.aac'):
-                data = sxm.get_segment(self.path[1:])
+                split = self.path.split("/")
+                id = split[-2]
+                seg = split[-1]
+                data = sxm.get_segment(id,seg)
                 if data:
                     self.send_response(200)
                     self.send_header('Content-Type', 'audio/x-aac')
@@ -344,36 +398,32 @@ def make_sirius_handler(sxm):
                 self.send_header('Content-Type', 'text/plain')
                 self.end_headers()
                 self.wfile.write(self.HLS_AES_KEY)
+            # TODO: Add a path which works in the format of /listen/{UUID}
+            # Make the M3U8 show it but only fetch the stream when clicked.
+            elif self.path.startswith("/listen/"):
+                data = sxm.get_channel(self.path.split('/')[-1])
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/x-mpegURL')
+                self.end_headers()
+                self.wfile.write(data)
+
             else:
                 self.send_response(500)
                 self.end_headers()
     return SiriusHandler
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='SiriusXM proxy')
-    parser.add_argument('username')
-    parser.add_argument('password')
-    parser.add_argument('-l', '--list', required=False, action='store_true', default=False)
-    parser.add_argument('-p', '--port', required=False, default=9999, type=int)
-    args = vars(parser.parse_args())
-    
-    sxm = SiriusXM(args['username'], args['password'])
-    if args['list']:
-        channels = list(sorted(sxm.get_channels(), key=lambda x: (not x.get('isFavorite', False), int(x.get('siriusChannelNumber', 9999)))))
-        
-        l1 = max(len(x.get('channelId', '')) for x in channels)
-        l2 = max(len(str(x.get('siriusChannelNumber', 0))) for x in channels)
-        l3 = max(len(x.get('name', '')) for x in channels)
-        print('{} | {} | {}'.format('ID'.ljust(l1), 'Num'.ljust(l2), 'Name'.ljust(l3)))
-        for channel in channels:
-            cid = channel.get('channelId', '').ljust(l1)[:l1]
-            cnum = str(channel.get('siriusChannelNumber', '??')).ljust(l2)[:l2]
-            cname = channel.get('name', '??').ljust(l3)[:l3]
-            print('{} | {} | {}'.format(cid, cnum, cname))
-    else:
-        httpd = HTTPServer(('', args['port']), make_sirius_handler(sxm))
-        try:
-            httpd.serve_forever()
-        except KeyboardInterrupt:
-            pass
-        httpd.server_close()
+    config.read('config.ini')
+    email = config.get("account","email")
+    password = config.get("account","password")
+
+    ip = config.get("settings","ip")
+    port = int(config.get("settings","port"))
+    print(ip, port)
+    sxm = SiriusXM(email, password)
+    httpd = HTTPServer((ip, port), make_sirius_handler(sxm))
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    httpd.server_close()
