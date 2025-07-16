@@ -27,7 +27,7 @@ Go to the project directory
 ```
 
 ### Add your config file
-rename ``config.example.ini`` to ``example.ini`` and edit the email/password to your SXM account.
+rename ``config.example.ini`` to ``config.ini`` and edit the email/password to your SXM account.
 
 Start the server
 
