@@ -398,6 +398,20 @@ class SiriusXM:
             return False
         return data["key"]
 
+    def get_metadata(self, id):
+        postdata = {
+            "id": id,
+            "type": "channel-linear",
+            "hlsVersion": "V3",
+            "manifestVariant": "WEB",
+            "mtcVersion": "V2"
+        }
+        data = self.post('playback/play/v1/tuneSource', postdata, authenticate=True)
+        if not data:
+            print("Couldn't get channel metadata.")
+            return False
+        return data
+
 
 def make_sirius_handler(sxm):
     class SiriusHandler(BaseHTTPRequestHandler):
@@ -407,6 +421,7 @@ def make_sirius_handler(sxm):
                 if data:
                     self.send_response(200)
                     self.send_header('Content-Type', 'application/x-mpegURL')
+                    self.send_header('Access-Control-Allow-Origin', '*')
                     self.end_headers()
                     self.wfile.write(bytes(data, 'utf-8'))
                     return
@@ -421,6 +436,7 @@ def make_sirius_handler(sxm):
                 if data:
                     self.send_response(200)
                     self.send_header('Content-Type', 'audio/x-aac')
+                    self.send_header('Access-Control-Allow-Origin', '*')
                     self.end_headers()
                     self.wfile.write(data)
                 else:
@@ -436,6 +452,7 @@ def make_sirius_handler(sxm):
                 else:
                     self.send_response(200)
                     self.send_header('Content-Type', 'text/plain')
+                    self.send_header('Access-Control-Allow-Origin', '*')
                     self.end_headers()
                     self.wfile.write(key)
             # TODO: Add a path which works in the format of /listen/{UUID}
@@ -444,8 +461,18 @@ def make_sirius_handler(sxm):
                 data = sxm.get_channel(self.path.split('/')[-1])
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/x-mpegURL')
+                self.send_header('Access-Control-Allow-Origin', '*')
                 self.end_headers()
                 self.wfile.write(data)
+            elif self.path.startswith("/metadata/"):
+                channel_id = self.path.split('/')[-1]
+                data = sxm.get_metadata(channel_id)
+
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/x-mpegURL')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(json.dumps(data).encode('utf-8'))
             else:
                 self.send_response(500)
                 self.end_headers()
