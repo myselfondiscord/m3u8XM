@@ -1,7 +1,7 @@
 
 # M3U8 XM
 
-A WIP script that converts SiriusXM's web app into a M3U8 file.
+A fork of a WIP script that converts SiriusXM's web app into a M3U8 file, but with metadata added
 
 
 Credits to [andrew0](https://github.com/andrew0) for the basis of this script.
