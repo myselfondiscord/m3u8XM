@@ -55,7 +55,7 @@ class SiriusXM:
         res = self.session.get(self.REST_FORMAT.format(method), params=params)
         if res.status_code != 200:
             if res.status_code == 401:
-                self.reauthenticate()
+                self.login()
                 return self.post(method,params,authenticate,retries)
             self.log('Received status code {} for method \'{}\''.format(res.status_code, method))
             return None
@@ -78,7 +78,7 @@ class SiriusXM:
         res = self.session.post(self.REST_FORMAT.format(method), data=json.dumps(postdata),headers=headers)
         if res.status_code != 200 and res.status_code != 201:
             if res.status_code == 401:
-                self.reauthenticate()
+                self.login()
                 return self.post(method,postdata,authenticate,headers,retries)
             self.log('Received status code {} for method \'{}\''.format(res.status_code, method))
             return None
@@ -165,10 +165,6 @@ class SiriusXM:
         except KeyError:
             self.log('Error parsing json response for authentication')
             return False
-
-    def reauthenticate(self):
-        data = self.post("session/v1/sessions/refresh",{},False)
-        return True
 
     def get_playlist(self):
         # Not 100% sure how this was working previously, but modern times
@@ -405,8 +401,6 @@ class SiriusXM:
 
 def make_sirius_handler(sxm):
     class SiriusHandler(BaseHTTPRequestHandler):
-        #HLS_AES_KEY = base64.b64decode(sxm.getAESkey())
-
         def do_GET(self):
             if self.path.endswith('.m3u8'):
                 data = sxm.get_playlist()
@@ -452,7 +446,6 @@ def make_sirius_handler(sxm):
                 self.send_header('Content-Type', 'application/x-mpegURL')
                 self.end_headers()
                 self.wfile.write(data)
-
             else:
                 self.send_response(500)
                 self.end_headers()
