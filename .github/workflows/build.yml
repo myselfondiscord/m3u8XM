@@ -43,27 +43,30 @@ jobs:
           path: dist/sxm-macos
 
   release:
-    name: Create GitHub Release
     needs: [build-windows, build-macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Download Windows EXE
         uses: actions/download-artifact@v4
         with:
           name: sxm-windows.exe
+          path: .
+
       - name: Download macOS binary
         uses: actions/download-artifact@v4
         with:
           name: sxm-macos
+          path: .
+
       - name: Create Release & upload assets
-        uses: ncipollo/release-action@v1  
+        uses: ncipollo/release-action@v1
         with:
           tag: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
           artifacts: |
-            sxm-windows.exe:dist/sxm.exe
-            sxm-macos:dist/sxm-macos
+            sxm-windows.exe,sxm-macos
           draft: false
           prerelease: false
         env:
