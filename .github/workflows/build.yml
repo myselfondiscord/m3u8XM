@@ -12,14 +12,14 @@ jobs:
         uses: actions/setup-python@v5  
         with:
           python-version: '3.12'
-      - name: Install PyInstaller
-        run: pip install pyinstaller
+      - name: Install PyInstaller and requests
+        run: pip install pyinstaller requests
       - name: Build EXE
         run: pyinstaller --onefile sxm.py
       - name: Upload Windows EXE
         uses: actions/upload-artifact@v4  
         with:
-          name: sxm-windows.exe
+          name: sxm.exe
           path: dist/sxm.exe
 
   build-macos:
@@ -31,11 +31,13 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install PyInstaller
-        run: pip install pyinstaller
+      - name: Install PyInstaller and requests
+        run: pip install pyinstaller requests
       - name: Build universal macOS binary
         run: |
           pyinstaller --onefile sxm.py --name sxm-macos --target-arch universal2
+      - name: Make macOS binary executable
+        run: chmod +x dist/sxm-macos
       - name: Upload macOS binary
         uses: actions/upload-artifact@v4
         with:
@@ -53,7 +55,7 @@ jobs:
       - name: Download Windows EXE
         uses: actions/download-artifact@v4
         with:
-          name: sxm-windows.exe
+          name: sxm.exe
           path: .
 
       - name: Download macOS binary
@@ -76,7 +78,7 @@ jobs:
           tag: ${{ steps.create_tag.outputs.new_tag }}
           name: Release ${{ steps.create_tag.outputs.new_tag }}
           artifacts: |
-            sxm-windows.exe,sxm-macos
+            sxm.exe,sxm-macos
           draft: false
           prerelease: false
         env:
