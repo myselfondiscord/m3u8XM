@@ -13,6 +13,7 @@ Credits to [andrew0](https://github.com/andrew0) for the basis of this script.
 - Support for channel logos & genre filtering
 EPG coming soon
 - Metadata
+
 ## Run Locally
 
 Clone the project
@@ -36,6 +37,13 @@ Start the server
   python3 sxm.py
 ```
 
+## Run via Docker
+
+Follow instruction up to adding config file. Start the server using command:
+
+```bash
+  docker compose up -d
+```
 
 ## License
 
