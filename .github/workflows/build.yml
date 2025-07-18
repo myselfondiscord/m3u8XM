@@ -3,7 +3,7 @@ name: Build and release binaries
 on:
   push:
     tags:
-      - 'v*'
+      - 'v*' # need to trigger only on v
 
 jobs:
   build-windows:
