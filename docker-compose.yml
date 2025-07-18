@@ -1,0 +1,13 @@
+services:
+  m3u8xm:
+    build: .
+    ports:
+      - 8888:8888
+    volumes:
+      - ./config.ini:/app/config.ini
+    restart: unless-stopped
+    networks:
+      - m3u8xm
+
+networks:
+  m3u8xm:
