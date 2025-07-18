@@ -1,6 +1,7 @@
 services:
   m3u8xm:
     build: .
+    container_name: m3u8xm
     ports:
       - 8888:8888
     volumes:
