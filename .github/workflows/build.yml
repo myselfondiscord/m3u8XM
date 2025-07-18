@@ -1,9 +1,6 @@
 name: Build and release binaries
 
-on:
-  push:
-    tags:
-      - 'v*' # need to trigger only on v
+on: [push]
 
 jobs:
   build-windows:
