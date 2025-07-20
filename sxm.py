@@ -54,7 +54,7 @@ class SiriusXM:
 
         res = self.session.get(self.REST_FORMAT.format(method), params=params)
         if res.status_code != 200:
-            if res.status_code == 401:
+            if res.status_code == 401 or res.status_code == 403:
                 self.login()
                 return self.post(method,params,authenticate,retries)
             self.log('Received status code {} for method \'{}\''.format(res.status_code, method))
@@ -77,7 +77,7 @@ class SiriusXM:
 
         res = self.session.post(self.REST_FORMAT.format(method), data=json.dumps(postdata),headers=headers)
         if res.status_code != 200 and res.status_code != 201:
-            if res.status_code == 401:
+            if res.status_code == 401 or res.status_code == 403:
                 self.login()
                 return self.post(method,postdata,authenticate,headers,retries)
             self.log('Received status code {} for method \'{}\''.format(res.status_code, method))
