@@ -62,7 +62,7 @@ class SiriusXM:
         if res.status_code != 200:
             if res.status_code == 401 or res.status_code == 403:
                 self.login()
-                return self.post(method,params,authenticate,retries)
+                return self.post(method, postdata=params, authenticate=authenticate, retries=retries)
             self.log('Received status code {} for method \'{}\''.format(res.status_code, method))
             return None
 
