@@ -8,6 +8,8 @@ import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import configparser
 config = configparser.ConfigParser()
+import random
+import threading
 
 class SiriusXM:
     USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36'
@@ -21,9 +23,13 @@ class SiriusXM:
         self.password = password
         self.playlists = {}
         self.channels = None
+        self.channel_ref = None
         self.m3u8dat = None
-        self.channel_urls = {}
-
+        self.stream_urls = {}
+        self.xtra_streams = {}
+        self.prevcount = 0
+        threading.Thread(target=self.cleanup_streaminfo, daemon=True).start()
+    
     @staticmethod
     def log(x):
         print('{} <SiriusXM>: {}'.format(datetime.datetime.now().strftime('%d.%b %Y %H:%M:%S'), x))
@@ -54,7 +60,7 @@ class SiriusXM:
 
         res = self.session.get(self.REST_FORMAT.format(method), params=params)
         if res.status_code != 200:
-            if res.status_code == 401:
+            if res.status_code == 401 or res.status_code == 403:
                 self.login()
                 return self.post(method,params,authenticate,retries)
             self.log('Received status code {} for method \'{}\''.format(res.status_code, method))
@@ -77,7 +83,7 @@ class SiriusXM:
 
         res = self.session.post(self.REST_FORMAT.format(method), data=json.dumps(postdata),headers=headers)
         if res.status_code != 200 and res.status_code != 201:
-            if res.status_code == 401:
+            if res.status_code == 401 or res.status_code == 403:
                 self.login()
                 return self.post(method,postdata,authenticate,headers,retries)
             self.log('Received status code {} for method \'{}\''.format(res.status_code, method))
@@ -124,13 +130,7 @@ class SiriusXM:
         if not data:
             self.log("Error creating device session:",data)
             return False
-        
-        #try:
-        #    return data['grant'] == True and self.is_logged_in()
-        #except KeyError:
-        #    self.log('Error decoding json response for login')
-        #    return False
-        
+
         # Once device is registered, grant anonymous permissions 
         data = self.post('session/v1/sessions/anonymous', {}, authenticate=False,headers=sxmheaders)
         if not data:
@@ -175,14 +175,15 @@ class SiriusXM:
         if not self.m3u8dat:
             data = []
             data.append("#EXTM3U")
-            m3umetadata = """#EXTINF:-1 tvg-logo="{}" group-title="{}",{}\n{}"""
+            m3umetadata = """#EXTINF:-1 tvg-id="{}" tvg-logo="{}" group-title="{}",{}\n{}"""
             for channel in self.channels:
                 #TODO: Work on finding the proper M3U8 metadata needed.
                 title = channel["title"]
                 genre = channel["genre"]
                 logo = channel["logo"]
+                channel_id = channel["channel_id"]
                 url = "/listen/{}".format(channel["id"])
-                formattedm3udata = m3umetadata.format(logo,genre,title,url)
+                formattedm3udata = m3umetadata.format(channel_id,logo,genre,title,url)
                 data.append(formattedm3udata)
             self.m3u8dat = "\n".join(data)
         
@@ -231,6 +232,7 @@ class SiriusXM:
                 title = channel["entity"]["texts"]["title"]["default"]
                 description = channel["entity"]["texts"]["description"]["default"]
                 genre = channel["decorations"]["genre"] if "genre" in channel["decorations"] else ""
+                channel_id = channel["decorations"]["channelNumber"]
                 channel_type = channel["actions"]["play"][0]["entity"]["type"]
                 logo = channel["entity"]["images"]["tile"]["aspect_1x1"]["preferred"]["url"]
                 logo_width = channel["entity"]["images"]["tile"]["aspect_1x1"]["preferred"]["width"]
@@ -248,6 +250,7 @@ class SiriusXM:
                     "title": title,
                     "description": description,
                     "genre": genre,
+                    "channel_id": channel_id,
                     "channel_type": channel_type,
                     "logo":  self.CDN_URL.format(b64logo),
                     "url": "/listen/{}".format(id),
@@ -289,6 +292,7 @@ class SiriusXM:
                     title = channel["entity"]["texts"]["title"]["default"]
                     description = channel["entity"]["texts"]["description"]["default"]
                     genre = channel["decorations"]["genre"] if "genre" in channel["decorations"] else ""
+                    channel_id = channel["decorations"]["channelNumber"]
                     channel_type = channel["actions"]["play"][0]["entity"]["type"]
                     logo = channel["entity"]["images"]["tile"]["aspect_1x1"]["preferred"]["url"]
                     logo_width = channel["entity"]["images"]["tile"]["aspect_1x1"]["preferred"]["width"]
@@ -306,6 +310,7 @@ class SiriusXM:
                         "title": title,
                         "description": description,
                         "genre": genre,
+                        "channel_id": channel_id,
                         "channel_type": channel_type,
                         "logo":  self.CDN_URL.format(b64logo),
                         "url": "/listen/{}".format(id),
@@ -326,68 +331,104 @@ class SiriusXM:
     def get_tuner(self,id):
         channel_info = self.get_channel_info(id)
         channel_type = channel_info["channel_type"] if channel_info and "channel_type" in channel_info else "channel-linear"
+        isXtra = channel_type == "channel-xtra"
+        if id in self.stream_urls and isXtra == False:
+            return self.stream_urls[id]
+        #if contextId != None and contextId in self.xtra_streams and isXtra == True:
+        #    return self.xtra_streams[contextId]
         postdata = {
             "id":id,
             "type":channel_type,
             "hlsVersion":"V3",
-            "manifestVariant":"WEB" if channel_type == "channel-linear" else "FULL",
             "mtcVersion":"V2"
         }
-        data = self.post('playback/play/v1/tuneSource',postdata,authenticate=True)
+
+        hasContextId = False
+        contextId = ''
+        if isXtra and id in self.stream_urls and "sourceContextId" in self.stream_urls[id]:
+            hasContextId = True
+            contextId = self.stream_urls[id]["sourceContextId"]
+        if hasContextId:
+            postdata["sourceContextId"] = contextId
+        else:
+            postdata["manifestVariant"] = "WEB" if channel_type == "channel-linear" else "FULL"
+        
+        tunerUrl = 'playback/play/v1/tuneSource' if not hasContextId else 'playback/play/v1/peek'
+        data = self.post(tunerUrl,postdata,authenticate=True)
         if not data:
             self.log("Couldn't tune channel.")
             return False
         #TODO: add secondary cause why not
         streaminfo = {}
         primarystreamurl = data["streams"][0]["urls"][0]["url"]
+        sessionId = None
+        sourceContextId = None
+        if isXtra:
+            sessionId = str(random.randint((10**37),(10**38)))
+            sourceContextId = data["streams"][0]["metadata"]["xtra"]["sourceContextId"] 
+            streaminfo["sessionId"] = sessionId
+            streaminfo["expires"] = time.time()+600 # expire/remove this stream in 10 minutes
         base_url, m3u8_loc = primarystreamurl.rsplit('/', 1)
         streaminfo["base_url"] = base_url
         streaminfo["sources"] = m3u8_loc
         streaminfo["chid"] = base_url.split('/')[-2]
+        streaminfo["sourceContextId"] = sourceContextId
         streamdata = self.sfetch(primarystreamurl).decode("utf-8")
         if not streamdata:
-            print("Failed to fetch m3u8 stream details")
+            self.log("Failed to fetch m3u8 stream details")
             return False
         # TODO: make this have options for other qualities (url parameter?)
         for line in streamdata.splitlines():
             if line.find("256k") > 0 and line.endswith("m3u8"):
                 streaminfo["quality"] = line
                 streaminfo["HLS"] = line.split("/")[0]
-        self.channel_urls[id] = streaminfo
+        if isXtra:
+            self.xtra_streams[ sessionId ] = streaminfo
+        self.stream_urls[id] = streaminfo
         return streaminfo
     
-
+    def get_tuner_cached(self,id,sessionId):
+            return self.xtra_streams[sessionId]
+    
+    def cleanup_streaminfo(self,delay=600):
+        while True:
+            now = time.time()
+            keys_to_delete = [sessionId for sessionId in self.xtra_streams.keys() if self.xtra_streams[sessionId]["expires"] < now]
+            for k in keys_to_delete:
+                del self.xtra_streams[k]
+            time.sleep(delay)
+    
     def get_channel(self, id):
         # Hit a wall in how I wanted to implement this, but this is what I ended up doing:
         # Caching the /tuneSource url provided, and associating it to the /listen UUID
         # this prevents multiple hits to /tuneSource and more to the Streaming CDN
         # potentially speeding this part of the process up, as well as being more subtle
         # in main site web traffic.
-        if not id in self.channel_urls:
-            self.get_tuner(id)
-        streaminfo = self.channel_urls[id]
+        streaminfo = self.get_tuner(id)
+        sessionId = streaminfo["sessionId"] if "sessionId" in streaminfo and streaminfo["sessionId"] != None else ''
         aacurl = "{}/{}".format(streaminfo["base_url"],streaminfo["quality"])
         # fetch the list of aac files
         data = self.sfetch(aacurl).decode("utf-8")
         if not data:
-            print("failed to fetch AAC stream list")
+            self.log("failed to fetch AAC stream list")
             return False
         data = data.replace("https://api.edge-gateway.siriusxm.com/playback/key/v1/","/key/",1)
         lineoutput = []
         lines = data.splitlines()
         for x in range(len(lines)):
             if lines[x].rstrip().endswith('.aac'):
-                lines[x] = '{}/{}'.format(id, lines[x])
+                lines[x] = '{}/{}?{}'.format(id, lines[x],sessionId)
         return '\n'.join(lines).encode('utf-8')
 
-    def get_segment(self,id,seg):
-        if not id in self.channel_urls:
-            self.get_tuner(id)
-        streaminfo = self.channel_urls[id]
+    def get_segment(self,id,seg,sessionId=''):
+        streaminfo = None
+        if sessionId != '':
+            streaminfo = self.get_tuner_cached(id,sessionId)      
+        else:      
+            streaminfo = self.get_tuner(id)
         baseurl = streaminfo["base_url"]
         HLStag = streaminfo["HLS"]
         segmenturl = "{}/{}/{}".format(baseurl,HLStag,seg)
-        # print("fetching seg from url:",segmenturl)
         data = self.sfetch(segmenturl)
         return data
         
@@ -397,12 +438,12 @@ class SiriusXM:
             self.log("AES Key fetch error.")
             return False
         return data["key"]
-
+    
 
 def make_sirius_handler(sxm):
     class SiriusHandler(BaseHTTPRequestHandler):
         def do_GET(self):
-            if self.path.endswith('.m3u8'):
+            if self.path.find('.m3u8') > 0:
                 data = sxm.get_playlist()
                 if data:
                     self.send_response(200)
@@ -413,11 +454,17 @@ def make_sirius_handler(sxm):
                 else:
                     self.send_response(500)
                     self.end_headers()
-            elif self.path.endswith('.aac'):
-                split = self.path.split("/")
-                id = split[-2]
-                seg = split[-1]
-                data = sxm.get_segment(id,seg)
+            elif self.path.find('.aac') > 0:
+                dirsplit = self.path.split("/")
+                id = dirsplit[-2]
+                seg = dirsplit[-1]
+                data = None
+                if self.path.find('?') > 0:
+                    contextId = self.path.split("?")[-1]
+                    data = sxm.get_segment(id,seg,contextId)
+                else:
+                    data = sxm.get_segment(id,seg)
+                
                 if data:
                     self.send_response(200)
                     self.send_header('Content-Type', 'audio/x-aac')
@@ -426,7 +473,7 @@ def make_sirius_handler(sxm):
                 else:
                     self.send_response(500)
                     self.end_headers()
-            elif self.path.startswith('/key'):
+            elif self.path.startswith('/key/'):
                 split = self.path.split("/")
                 uuid = split[-1]
                 key = base64.b64decode(sxm.getAESkey(uuid))
@@ -438,8 +485,6 @@ def make_sirius_handler(sxm):
                     self.send_header('Content-Type', 'text/plain')
                     self.end_headers()
                     self.wfile.write(key)
-            # TODO: Add a path which works in the format of /listen/{UUID}
-            # Make the M3U8 show it but only fetch the stream when clicked.
             elif self.path.startswith("/listen/"):
                 data = sxm.get_channel(self.path.split('/')[-1])
                 self.send_response(200)
@@ -450,6 +495,8 @@ def make_sirius_handler(sxm):
                 self.send_response(500)
                 self.end_headers()
     return SiriusHandler
+
+
 
 if __name__ == '__main__':
     config.read('config.ini')
