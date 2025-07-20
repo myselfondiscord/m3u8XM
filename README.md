@@ -11,7 +11,8 @@ Credits to [andrew0](https://github.com/andrew0) for the basis of this script.
 - Automatic login
 - Creates a full channel playlist
 - Support for channel logos & genre filtering
-EPG coming soon
+- Xtra streams supported
+
 ## Run Locally
 
 Clone the project
