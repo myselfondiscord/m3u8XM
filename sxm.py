@@ -36,15 +36,21 @@ class SiriusXM:
     def is_session_authenticated(self):
         return 'Authorization' in self.session.headers
     
-    def sfetch(self, url):
+    def sfetch(self, url, retries=0):
         res = self.session.get(url)
+        if retries >= 2:
+            self.log("Failed to reauthenticate after 401. Dump: ",self.session.headers)
+            return None
         if res.status_code != 200:
+            if res.status_code >= 400 and res.status_code < 500:
+                self.login()
+                self.authenticate()
+                return self.sfetch(self,url,retries=retries+1)
             self.log("Failed to recieve stream data. Error code {}".format(str(res.status_code)))
             return None
         return res.content
 
     def get(self, method, params={}, authenticate=True, retries=0):
-        retries += 1
         if retries >= 3:
             self.log("Max retries hit on {}".format(method))
             return None
@@ -54,9 +60,10 @@ class SiriusXM:
 
         res = self.session.get(self.REST_FORMAT.format(method), params=params)
         if res.status_code != 200:
-            if res.status_code == 401 or res.status_code == 403:
+            if res.status_code >= 400 and res.status_code < 500:
                 self.login()
-                return self.post(method,params,authenticate,retries)
+                self.authenticate()
+                return self.post(method, postdata=params, authenticate=authenticate, retries=retries+1)
             self.log('Received status code {} for method \'{}\''.format(res.status_code, method))
             return None
 
@@ -67,7 +74,6 @@ class SiriusXM:
             return None
 
     def post(self, method, postdata, authenticate=True, headers={},retries=0):
-        retries += 1
         if retries >= 3:
             self.log("Max retries hit on {}".format(method))
             return None
@@ -77,9 +83,10 @@ class SiriusXM:
 
         res = self.session.post(self.REST_FORMAT.format(method), data=json.dumps(postdata),headers=headers)
         if res.status_code != 200 and res.status_code != 201:
-            if res.status_code == 401 or res.status_code == 403:
+            if res.status_code >= 400 and res.status_code < 500:
                 self.login()
-                return self.post(method,postdata,authenticate,headers,retries)
+                self.authenticate()
+                return self.post(method,postdata,authenticate,headers,retries+1)
             self.log('Received status code {} for method \'{}\''.format(res.status_code, method))
             return None
 
@@ -102,6 +109,9 @@ class SiriusXM:
         # The following is reserved for Authentication:
         # Login
         # Affirm Authentication
+
+        self.session = requests.Session()
+        self.session.headers.update({'User-Agent': self.USER_AGENT})
 
         postdata = {
             'devicePlatform': "web-desktop",
